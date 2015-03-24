@@ -4,25 +4,17 @@ import sbt._
 import Keys._
 import java.lang.{ProcessBuilder => JProcessBuilder}
 import scala.util.matching.Regex
+import FileUtils._
 
 object TestReportsCopy {
-  import FileUtils._
 
   lazy val settings = Seq(
     //libraryDependencies += Dependencies.test.specs2 % "test",
     testOptions in Test += Tests.Argument("markdown", "console" /*"html"*/),
-    reportsDir := "specs2-reports",
-    testOptions in Test += Tests.Argument(TestFrameworks.Specs2, "markdown.outdir", (baseDirectory.value / "specs2--reports").absolutePath),
-    testOptions in Test += {
-      val ops = testOptions.value
-
-      Tests.Argument()
-    },
+    reportsDir := file("target/specs2-reports"),
     cleanTestReports <<= cleanTestReportsTask,
-    copyTestReports := TaskUtils.runTasksForAllSubProjects(state.value, test in Test, copyGeneratedTestReports)
-      .last.get.asInstanceOf[Seq[File]],
-    copyGeneratedTestReports <<= copyGeneratedTestReportsTask,
-//    copyTestReports <<= copyTestReports.dependsOn(test in Test),
+    copyTestReports <<= copyGeneratedTestReportsTask,
+    copyTestReports <<= copyTestReports.dependsOn(test in Test),
     //    addReportsToGit <<= addReportsToGitTask,
     setAutoAddReportsToGit,
     setAutoCleanTestReports,
@@ -34,32 +26,25 @@ object TestReportsCopy {
   val copyTestReports = TaskKey[Seq[File]]("copy-test-reports")
   val cleanTestReports = TaskKey[Unit]("clean-test-reports")
   //  val addReportsToGit = TaskKey[Unit]("add-test-reports-to-git")
-  protected val copyGeneratedTestReports = TaskKey[Seq[File]]("copy-test-reports-inner")
 
   val copyTestReportsDir = SettingKey[Option[File]]("test-reports-copy-dir")
-  val reportsDir = SettingKey[String]("specs-reports-dir")
+  val reportsDir = SettingKey[File]("specs-reports-dir")
   val autoCleanExports = SettingKey[Boolean]("clean-test-reports-on-clean-auto")
   val autoAddReportsToGit = SettingKey[Boolean]("add-test-reports-to-git-on-copy-auto")
   val gitRoot = SettingKey[File]("add-test-reports-to-git-on-copy-auto")
 
-  val copyGeneratedTestReportsTask = (copyTestReportsDir, definedTestNames in Test, streams, reportsDir, state, target) map {
-
-    (exportOpt, names, s, report, state, t) =>
+  val copyGeneratedTestReportsTask = (copyTestReportsDir, definedTestNames in Test, streams, reportsDir, state) map {
+    (exportOpt, names, s, report, state) =>
       exportOpt map {
         exportDist =>
           val log = s.log
           if (names.nonEmpty) {
             if (!exportDist.exists()) exportDist.mkdir()
             log.info(s"exporting specs generated markdown for project ${Project.current(state).project}:")
-            log.info(names.mkString("\t", "\t\n", ""))
+            log.info(names.mkString("\t", "\n", ""))
 
-            val rdir = t / report
-
-            log.info(s"rdir = $rdir; exportDist = $exportDist")
-
-            val dest = rdir ** "*.md" pair rebase(rdir, exportDist) rename( """feh\.util\.(.*)""".r, "$1")
-            log.info("rdir ** \"*.md\": dest: " + (rdir ** "*.md"))
-            log.info("copyGeneratedTestReportsTask: dest: " + dest)
+            val dest = report ** "*.md" pair rebase(report, exportDist) rename( """feh\.util\.(.*)""".r, "$1")
+            log.debug("copyGeneratedTestReportsTask: dest: " + dest)
 
             for {
               (from, to) <- dest
@@ -92,7 +77,7 @@ object TestReportsCopy {
           log.debug("addReportsToGit: reports: " + reports)
           log.debug("addReportsToGit: reports exist: " + reports.map(_.exists()))
       log.info("Adding generated test reports to git repo")
-      val paths = reports.map(_.relativeTo(baseDir).get)
+      val paths = reports //.map(_.relativeTo(baseDir).get)
       val cmd = List("git", "add") ++ paths.map(_.getPath)
           log.debug("addReportsToGit: git command: " + cmd.toSeq)
           log.debug("addReportsToGit: base dir: " + baseDir)
@@ -111,44 +96,23 @@ object TestReportsCopy {
 
   val setAutoAddReportsToGit = copyTestReports <<= (copyTestReports, autoAddReportsToGit, streams, baseDirectory) map {
     (copied, set, st, baseDir) =>
-      if (set) addReportsToGit(copied, baseDir, st.log)
+      if (set) addReportsToGit(copied.get, baseDir, st.log)
       copied
   }
 
+}
 
-  object FileUtils{
-    type FileMapEntry = (File, File)
-    private type FileMap = Seq[(File, File)]
+object FileUtils{
+  type FileMapEntry = (File, File)
+  private type FileMap = Seq[(File, File)]
 
-    implicit class MapRenameWrapper(map: => FileMap){
-      def rename(extract: Regex, build: String): FileMap = map map {
-        case (from, to) => from -> FileUtils.rename(extract, build)(to)
-      }
-    }
-
-    def rename(extract: Regex, build: String): File => File = file =>
-      file.getParentFile / extract.replaceAllIn(file.name, build)
-
-  }
-
-  object TaskUtils{
-
-    def runTasksForAllSubProjects(state: Types.Id[State], tasks: TaskKey[_]*): Seq[Option[Any]] = {
-      val extracted = Project.extract(state)
-      def projectMap(sp: ProjectRef) = Map(sp.build -> sp.project)
-
-      extracted.currentProject.aggregate.flatMap { subproj =>
-        val newSession = extracted.session.copy(currentProject = projectMap(subproj))
-        val newState = Project.setProject(newSession, extracted.structure, state)
-        (List.empty[Option[Any]] /: tasks) {
-          case (acc, task) =>
-            Project.runTask(task, newState) match {
-              case Some((_, Value(res))) => Some(res) :: acc
-              case Some((_, Inc(cause))) => throw new Exception("task failed", cause)
-              case None => None :: acc
-            }
-        }.reverse
-      }
+  implicit class MapRenameWrapper(map: => FileMap){
+    def rename(extract: Regex, build: String): FileMap = map map {
+      case (from, to) => from -> FileUtils.rename(extract, build)(to)
     }
   }
+
+  def rename(extract: Regex, build: String): File => File = file =>
+    file.getParentFile / extract.replaceAllIn(file.name, build)
+
 }
